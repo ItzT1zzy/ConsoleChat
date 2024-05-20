@@ -1,0 +1,98 @@
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+
+namespace ConsoleChat.Server;
+
+public class Program
+{
+    private static readonly Dictionary<string, TcpClient> clients = new();
+    private static readonly object lockObj = new();
+
+    private static async Task Main(string[] args)
+    {
+        var listener = new TcpListener(IPAddress.Any, 8888);
+        listener.Start();
+        Console.WriteLine("Сервер запущен...");
+
+        while (true)
+        {
+            var client = await listener.AcceptTcpClientAsync();
+            _ = HandleClientAsync(client);
+        }
+    }
+
+    private static async Task HandleClientAsync(TcpClient client)
+    {
+        var stream = client.GetStream();
+        var buffer = new byte[1024];
+        var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
+        var name = Encoding.UTF8.GetString(buffer, 0, bytesRead).Trim();
+
+        lock (lockObj)
+        {
+            clients[name] = client;
+        }
+
+        Console.WriteLine($"{name} подключился.");
+
+        while (true)
+            try
+            {
+                bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
+                if (bytesRead == 0) break;
+
+                var message = Encoding.UTF8.GetString(buffer, 0, bytesRead).Trim();
+                Console.WriteLine($"{name}: {message}");
+
+                if (message.StartsWith("/msg"))
+                {
+                    var splitMessage = message.Split(' ', 3);
+                    if (splitMessage.Length >= 3)
+                    {
+                        var recipient = splitMessage[1];
+                        var privateMessage = splitMessage[2];
+                        SendMessageToClient(recipient, $"[Приветно] {name}: {privateMessage}");
+                    }
+                }
+                else
+                {
+                    BroadcastMessage($"{name}: {message}", name);
+                }
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"Ошибка: {e.Message}");
+                break;
+            }
+
+        lock (lockObj)
+        {
+            clients.Remove(name);
+        }
+
+        Console.WriteLine($"{name} отключился.");
+        client.Close();
+    }
+
+    private static void BroadcastMessage(string message, string senderName)
+    {
+        var messageBytes = Encoding.UTF8.GetBytes(message);
+        lock (lockObj)
+        {
+            foreach (var client in clients)
+                if (client.Key != senderName)
+                    client.Value.GetStream().Write(messageBytes, 0, messageBytes.Length);
+        }
+    }
+
+    private static void SendMessageToClient(string recipientName, string message)
+    {
+        var messageBytes = Encoding.UTF8.GetBytes(message);
+        lock (lockObj)
+        {
+            if (clients.TryGetValue(recipientName, out var recipientClient))
+                recipientClient.GetStream().Write(messageBytes, 0, messageBytes.Length);
+        }
+    }
+}
